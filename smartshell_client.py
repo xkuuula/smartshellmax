@@ -125,15 +125,21 @@ class SmartShellClient:
         self._token_expires_at = time.time() + max(60, expires_in - 120)
         logger.info("SmartShell authenticated, token expires in %s seconds", expires_in)
 
-    async def fetch_events(self, start: datetime, finish: datetime) -> list[SmartShellEvent]:
+    async def fetch_events(
+        self,
+        start: datetime,
+        finish: datetime,
+        event_types: set[str] | None = None,
+    ) -> list[SmartShellEvent]:
         await self._ensure_token()
         input_parts = [
             f"start:{json.dumps(_format_dt(start))}",
             f"finish:{json.dumps(_format_dt(finish))}",
         ]
-        if self._event_types:
-            event_types = ", ".join(json.dumps(event_type) for event_type in self._event_types)
-            input_parts.append(f"types:[{event_types}]")
+        effective_event_types = sorted(event_types) if event_types is not None else self._event_types
+        if effective_event_types:
+            event_type_values = ", ".join(json.dumps(event_type) for event_type in effective_event_types)
+            input_parts.append(f"types:[{event_type_values}]")
 
         events: list[SmartShellEvent] = []
         for page in range(1, self._max_pages_per_poll + 1):

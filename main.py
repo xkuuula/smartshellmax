@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from html.parser import HTMLParser
 import logging
 import random
@@ -23,6 +24,13 @@ from storage import OutboxItem, Storage
 
 
 logger = logging.getLogger(__name__)
+
+ALWAYS_FORWARD_EVENT_TYPES = {
+    "SHELL_HIGH_ACCESS_ENABLED",
+    "SHELL_HIGH_ACCESS_DISABLED",
+    "SHELL_DISABLED",
+    "SHELL_ENABLED",
+}
 
 
 async def main_async() -> None:
@@ -82,13 +90,14 @@ async def poll_smartshell(
             start = cursor if first_run else cursor - timedelta(minutes=config.smartshell_poll_window_minutes)
             finish = datetime.now() + timedelta(minutes=1)
             events = await smartshell.fetch_events(start, finish)
-            if events:
-                logger.info(
-                    "Fetched %s SmartShell event(s) from %s to %s",
-                    len(events),
-                    _format_log_dt(start),
-                    _format_log_dt(finish),
-                )
+            events = await _with_forced_shell_events(smartshell, start, finish, events)
+            logger.info(
+                "Fetched %s SmartShell event(s) from %s to %s; types=%s",
+                len(events),
+                _format_log_dt(start),
+                _format_log_dt(finish),
+                _event_type_summary(events),
+            )
             queued = await enqueue_new_events(config, storage, smartshell, events)
             if queued:
                 logger.info("Queued %s SmartShell event(s) for MAX", queued)
@@ -103,6 +112,30 @@ async def poll_smartshell(
             failures += 1
             logger.exception("Unexpected SmartShell polling error")
             await _sleep_or_stop(stop_event, _backoff(failures, ceiling=300))
+
+
+async def _with_forced_shell_events(
+    smartshell: SmartShellClient,
+    start: datetime,
+    finish: datetime,
+    events: list[SmartShellEvent],
+) -> list[SmartShellEvent]:
+    try:
+        shell_events = await smartshell.fetch_events(start, finish, ALWAYS_FORWARD_EVENT_TYPES)
+    except SmartShellError as error:
+        logger.warning("Forced SmartShell shell-event polling failed: %s", error)
+        return events
+
+    merged: dict[int, SmartShellEvent] = {event.id: event for event in events}
+    for event in shell_events:
+        merged[event.id] = event
+    if shell_events:
+        logger.info(
+            "Forced shell-event check returned %s event(s); types=%s",
+            len(shell_events),
+            _event_type_summary(shell_events),
+        )
+    return list(merged.values())
 
 
 async def poll_smartshell_warehouse(
@@ -334,6 +367,8 @@ async def reconcile_uncertain_send(
 def _should_forward(config: Config, event: SmartShellEvent) -> bool:
     if event.type == "WORK_SHIFT_FINISHED" and event.work_shift_id is not None:
         return True
+    if event.type.upper() in ALWAYS_FORWARD_EVENT_TYPES:
+        return True
     if config.smartshell_send_all_events:
         return True
     if config.smartshell_event_types and event.type.upper() in config.smartshell_event_types:
@@ -486,6 +521,13 @@ def _format_report_dt(value: datetime) -> str:
 
 def _format_log_dt(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _event_type_summary(events: list[SmartShellEvent]) -> str:
+    if not events:
+        return "none"
+    counts = Counter(event.type for event in events)
+    return ", ".join(f"{event_type}:{count}" for event_type, count in counts.most_common(12))
 
 
 def _money(value: float) -> str:
