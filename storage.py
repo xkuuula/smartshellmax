@@ -95,6 +95,87 @@ class Storage:
             )
             await connection.commit()
 
+    async def discard_unsent_events_before(
+        self,
+        event_type_prefix: str,
+        before: datetime,
+        reason: str,
+    ) -> int:
+        connection = self._require_connection()
+        async with self._lock:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await connection.execute(
+                    """
+                    SELECT event_id
+                    FROM smartshell_events
+                    WHERE created_at < ?
+                      AND event_type LIKE ?
+                      AND status != 'sent'
+                    """,
+                    (_format_dt(before), f"{event_type_prefix}%"),
+                )
+                event_ids = [int(row[0]) for row in await cursor.fetchall()]
+                if not event_ids:
+                    await connection.rollback()
+                    return 0
+
+                placeholders = ",".join("?" for _ in event_ids)
+                await connection.execute(
+                    f"DELETE FROM outbox WHERE event_id IN ({placeholders})",
+                    tuple(event_ids),
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE smartshell_events
+                    SET status = 'skipped',
+                        sent_at = NULL,
+                        description = description || ?
+                    WHERE event_id IN ({placeholders})
+                    """,
+                    (f"\nSkipped unsent at startup: {reason}", *event_ids),
+                )
+                await connection.commit()
+                return len(event_ids)
+            except BaseException:
+                await connection.rollback()
+                raise
+
+    async def cleanup_old_records(self, older_than: datetime) -> int:
+        connection = self._require_connection()
+        async with self._lock:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await connection.execute(
+                    """
+                    SELECT event_id
+                    FROM smartshell_events
+                    WHERE created_at < ?
+                      AND status IN ('sent', 'skipped')
+                    """,
+                    (_format_dt(older_than),),
+                )
+                event_ids = [int(row[0]) for row in await cursor.fetchall()]
+                if not event_ids:
+                    await connection.rollback()
+                    return 0
+
+                placeholders = ",".join("?" for _ in event_ids)
+                await connection.execute(
+                    f"DELETE FROM outbox WHERE event_id IN ({placeholders})",
+                    tuple(event_ids),
+                )
+                await connection.execute(
+                    f"DELETE FROM smartshell_events WHERE event_id IN ({placeholders})",
+                    tuple(event_ids),
+                )
+                await connection.commit()
+                await connection.execute("VACUUM")
+                return len(event_ids)
+            except BaseException:
+                await connection.rollback()
+                raise
+
     async def initialize_cursor(self, value: datetime) -> bool:
         return await self.initialize_state_cursor("smartshell_event_cursor", value)
 

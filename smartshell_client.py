@@ -269,7 +269,6 @@ class SmartShellClient:
                     GoodHistoryOperation(
                         id=_stable_good_history_id(
                             good.id,
-                            created_at,
                             operation,
                             delta,
                             quantity_after,
@@ -489,14 +488,13 @@ def _stable_event_id(timestamp: str, event_type: str, description: str) -> int:
 
 def _stable_good_history_id(
     good_id: int,
-    created_at: datetime,
     operation: str,
     delta: int,
     quantity_after: int,
     comment: str,
 ) -> int:
     payload = (
-        f"good_history\0{good_id}\0{_format_dt(created_at)}\0{operation}\0"
+        f"good_history\0{good_id}\0{operation}\0"
         f"{delta}\0{quantity_after}\0{comment}"
     ).encode("utf-8", errors="replace")
     digest = hashlib.sha256(payload).digest()

@@ -30,6 +30,7 @@ class Config:
     database_path: Path
     log_file: Path
     log_level: str
+    retention_days: int
 
     @classmethod
     def load(cls) -> "Config":
@@ -80,6 +81,7 @@ class Config:
             database_path=Path(os.getenv("DATABASE_PATH", "smartshell_max.db")).expanduser().resolve(),
             log_file=Path(os.getenv("LOG_FILE", "service.log")).expanduser().resolve(),
             log_level=log_level,
+            retention_days=_int_env("RETENTION_DAYS", 7),
         )
 
 
