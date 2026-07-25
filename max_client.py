@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
-import truststore
+import certifi
 
 from config import Config
 
@@ -49,7 +49,7 @@ class MaxClient:
         self._bot_user_id: int | None = None
 
     async def __aenter__(self) -> "MaxClient":
-        ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         timeout = aiohttp.ClientTimeout(total=35, connect=10, sock_read=30)
         self._session = aiohttp.ClientSession(

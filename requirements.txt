@@ -1,4 +1,4 @@
 aiohttp>=3.11,<4
 aiosqlite>=0.20,<1
 python-dotenv>=1.0,<2
-truststore>=0.10,<1
+certifi>=2025.1.31
