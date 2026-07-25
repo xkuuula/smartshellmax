@@ -82,6 +82,13 @@ async def poll_smartshell(
             start = cursor if first_run else cursor - timedelta(minutes=config.smartshell_poll_window_minutes)
             finish = datetime.now() + timedelta(minutes=1)
             events = await smartshell.fetch_events(start, finish)
+            if events:
+                logger.info(
+                    "Fetched %s SmartShell event(s) from %s to %s",
+                    len(events),
+                    _format_log_dt(start),
+                    _format_log_dt(finish),
+                )
             queued = await enqueue_new_events(config, storage, smartshell, events)
             if queued:
                 logger.info("Queued %s SmartShell event(s) for MAX", queued)
@@ -112,6 +119,11 @@ async def poll_smartshell_warehouse(
             cursor = await storage.get_state_cursor("smartshell_warehouse_cursor")
             start = cursor if first_run else cursor - timedelta(minutes=config.smartshell_poll_window_minutes)
             finish = datetime.now() + timedelta(minutes=1)
+            logger.info(
+                "Checking SmartShell warehouse operations from %s to %s",
+                _format_log_dt(start),
+                _format_log_dt(finish),
+            )
             queued = await enqueue_good_history_operations(
                 config,
                 storage,
@@ -145,6 +157,13 @@ async def enqueue_new_events(
     queued = 0
     for event in sorted(events, key=lambda item: (item.created_at, item.id)):
         if not _should_forward(config, event):
+            logger.info(
+                "Skipped SmartShell event id=%s type=%s at=%s by filter: %s",
+                event.id,
+                event.type,
+                _format_log_dt(event.created_at),
+                _compact_log(_plain_text(event.description)),
+            )
             await storage.mark_skipped(event.id, event.created_at, event.type, event.description)
             await storage.advance_cursor(event.created_at)
             continue
@@ -154,7 +173,19 @@ async def enqueue_new_events(
         await storage.advance_cursor(event.created_at)
         if inserted:
             queued += 1
-            logger.info("Queued SmartShell event id=%s type=%s", event.id, event.type)
+            logger.info(
+                "Queued SmartShell event id=%s type=%s at=%s",
+                event.id,
+                event.type,
+                _format_log_dt(event.created_at),
+            )
+        else:
+            logger.info(
+                "Ignored duplicate SmartShell event id=%s type=%s at=%s",
+                event.id,
+                event.type,
+                _format_log_dt(event.created_at),
+            )
     return queued
 
 
@@ -172,6 +203,7 @@ async def enqueue_good_history_operations(
     except SmartShellError as error:
         logger.warning("SmartShell goods polling skipped: %s", error)
         return 0
+    logger.info("Fetched %s SmartShell goods for warehouse history check", len(goods))
 
     for index, good in enumerate(goods):
         try:
@@ -191,10 +223,19 @@ async def enqueue_good_history_operations(
             if inserted:
                 queued += 1
                 logger.info(
-                    "Queued SmartShell good history operation id=%s good_id=%s operation=%s",
+                    "Queued SmartShell good history operation id=%s good_id=%s operation=%s at=%s",
                     operation.id,
                     operation.good_id,
                     operation.operation,
+                    _format_log_dt(operation.created_at),
+                )
+            else:
+                logger.info(
+                    "Ignored duplicate SmartShell good history operation id=%s good_id=%s operation=%s at=%s",
+                    operation.id,
+                    operation.good_id,
+                    operation.operation,
+                    _format_log_dt(operation.created_at),
                 )
         if index < len(goods) - 1:
             await _sleep_or_stop(stop_event, 4)
@@ -443,6 +484,10 @@ def _format_report_dt(value: datetime) -> str:
     return value.strftime("%H:%M %d.%m.%Y")
 
 
+def _format_log_dt(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _money(value: float) -> str:
     return f"{value:.2f}"
 
@@ -460,6 +505,13 @@ def _plain_text(value: str) -> str:
     parser.feed(value)
     parser.close()
     return parser.result()
+
+
+def _compact_log(value: str, limit: int = 180) -> str:
+    compacted = " ".join(value.split())
+    if len(compacted) <= limit:
+        return compacted
+    return compacted[: limit - 3] + "..."
 
 
 class _PlainTextParser(HTMLParser):
