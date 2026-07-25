@@ -14,6 +14,7 @@ class Config:
     smartshell_password: str
     smartshell_company_id: int
     smartshell_club_title: str
+    smartshell_timezone: str
     smartshell_poll_interval_seconds: float
     smartshell_poll_window_minutes: int
     smartshell_warehouse_poll_interval_seconds: float
@@ -59,6 +60,7 @@ class Config:
             smartshell_password=_required("SMARTSHELL_PASSWORD"),
             smartshell_company_id=_required_int("SMARTSHELL_COMPANY_ID"),
             smartshell_club_title=os.getenv("SMARTSHELL_CLUB_TITLE", "").strip(),
+            smartshell_timezone=os.getenv("SMARTSHELL_TIMEZONE", "Europe/Moscow").strip() or "Europe/Moscow",
             smartshell_poll_interval_seconds=poll_interval,
             smartshell_poll_window_minutes=_int_env("SMARTSHELL_POLL_WINDOW_MINUTES", 120),
             smartshell_warehouse_poll_interval_seconds=_float_env(

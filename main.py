@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import Config
 from logger import configure_logging
@@ -38,16 +39,17 @@ async def main_async() -> None:
     configure_logging(config.log_file, config.log_level)
     logger.info("Starting SmartShell to MAX service")
     logger.info(
-        "Configured SmartShell company_id=%s, target MAX chat_id=%s",
+        "Configured SmartShell company_id=%s, timezone=%s, target MAX chat_id=%s",
         config.smartshell_company_id,
+        config.smartshell_timezone,
         config.max_target_chat_id,
     )
 
     storage = Storage(config.database_path)
     await storage.open()
     await storage.recover_after_restart()
-    first_run = await storage.initialize_cursor(datetime.now())
-    warehouse_first_run = await storage.initialize_state_cursor("smartshell_warehouse_cursor", datetime.now())
+    first_run = await storage.initialize_cursor(_club_now(config))
+    warehouse_first_run = await storage.initialize_state_cursor("smartshell_warehouse_cursor", _club_now(config))
 
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
@@ -88,7 +90,7 @@ async def poll_smartshell(
         try:
             cursor = await storage.get_cursor()
             start = cursor if first_run else cursor - timedelta(minutes=config.smartshell_poll_window_minutes)
-            finish = datetime.now() + timedelta(minutes=1)
+            finish = _club_now(config) + timedelta(minutes=1)
             events = await smartshell.fetch_events(start, finish)
             events = await _with_forced_shell_events(smartshell, start, finish, events)
             logger.info(
@@ -151,7 +153,7 @@ async def poll_smartshell_warehouse(
         try:
             cursor = await storage.get_state_cursor("smartshell_warehouse_cursor")
             start = cursor if first_run else cursor - timedelta(minutes=config.smartshell_poll_window_minutes)
-            finish = datetime.now() + timedelta(minutes=1)
+            finish = _club_now(config) + timedelta(minutes=1)
             logger.info(
                 "Checking SmartShell warehouse operations from %s to %s",
                 _format_log_dt(start),
@@ -521,6 +523,14 @@ def _format_report_dt(value: datetime) -> str:
 
 def _format_log_dt(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _club_now(config: Config) -> datetime:
+    try:
+        timezone = ZoneInfo(config.smartshell_timezone)
+    except ZoneInfoNotFoundError as error:
+        raise RuntimeError(f"Unknown SMARTSHELL_TIMEZONE: {config.smartshell_timezone}") from error
+    return datetime.now(timezone).replace(tzinfo=None)
 
 
 def _event_type_summary(events: list[SmartShellEvent]) -> str:
