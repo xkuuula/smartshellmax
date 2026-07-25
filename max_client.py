@@ -45,11 +45,17 @@ class MaxClient:
         self._base_url = config.max_api_base
         self._token = config.max_bot_token
         self._target_chat_id = config.max_target_chat_id
+        self._ssl_verify = config.max_ssl_verify
         self._session: aiohttp.ClientSession | None = None
         self._bot_user_id: int | None = None
 
     async def __aenter__(self) -> "MaxClient":
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        if self._ssl_verify:
+            ssl_context: ssl.SSLContext | bool = ssl.create_default_context(cafile=certifi.where())
+            logger.info("MAX client SSL verification enabled, CA bundle=%s", certifi.where())
+        else:
+            ssl_context = False
+            logger.warning("MAX client SSL verification is disabled by MAX_SSL_VERIFY=false")
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         timeout = aiohttp.ClientTimeout(total=35, connect=10, sock_read=30)
         self._session = aiohttp.ClientSession(

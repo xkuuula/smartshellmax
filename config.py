@@ -26,6 +26,7 @@ class Config:
     max_api_base: str
     max_bot_token: str
     max_target_chat_id: int
+    max_ssl_verify: bool
     database_path: Path
     log_file: Path
     log_level: str
@@ -75,6 +76,7 @@ class Config:
             max_api_base=max_api_base,
             max_bot_token=_required("MAX_BOT_TOKEN"),
             max_target_chat_id=_required_int("MAX_TARGET_CHAT_ID"),
+            max_ssl_verify=_bool_env("MAX_SSL_VERIFY", True),
             database_path=Path(os.getenv("DATABASE_PATH", "smartshell_max.db")).expanduser().resolve(),
             log_file=Path(os.getenv("LOG_FILE", "service.log")).expanduser().resolve(),
             log_level=log_level,
