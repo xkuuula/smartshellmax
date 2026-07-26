@@ -71,6 +71,7 @@ class Storage:
             );
 
             CREATE INDEX IF NOT EXISTS idx_outbox_status_id ON outbox(status, id);
+            CREATE INDEX IF NOT EXISTS idx_outbox_status_next_attempt ON outbox(status, next_attempt_at);
             """
         )
         await connection.commit()
@@ -281,13 +282,23 @@ class Storage:
         async with self._lock:
             cursor = await connection.execute(
                 """
-                SELECT id, event_id, part_index, message_text,
-                       status, attempt_count, next_attempt_at, attempt_started_at
-                FROM outbox
-                WHERE status IN ('pending', 'sending', 'uncertain')
-                ORDER BY event_id, part_index
+                SELECT
+                    o.id,
+                    o.event_id,
+                    o.part_index,
+                    o.message_text,
+                    o.status,
+                    o.attempt_count,
+                    o.next_attempt_at,
+                    o.attempt_started_at
+                FROM outbox AS o
+                JOIN smartshell_events AS e ON e.event_id = o.event_id
+                WHERE o.status IN ('pending', 'sending', 'uncertain')
+                  AND o.next_attempt_at <= ?
+                ORDER BY e.created_at, o.event_id, o.part_index
                 LIMIT 1
-                """
+                """,
+                (time.time(),),
             )
             row = await cursor.fetchone()
         return OutboxItem(**dict(row)) if row is not None else None

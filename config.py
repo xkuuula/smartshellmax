@@ -17,6 +17,8 @@ class Config:
     smartshell_timezone: str
     smartshell_poll_interval_seconds: float
     smartshell_poll_window_minutes: int
+    smartshell_max_event_age_minutes: int
+    smartshell_enable_warehouse_history: bool
     smartshell_warehouse_poll_interval_seconds: float
     smartshell_page_size: int
     smartshell_max_pages_per_poll: int
@@ -65,6 +67,8 @@ class Config:
             smartshell_timezone=os.getenv("SMARTSHELL_TIMEZONE", "Europe/Moscow").strip() or "Europe/Moscow",
             smartshell_poll_interval_seconds=poll_interval,
             smartshell_poll_window_minutes=_int_env("SMARTSHELL_POLL_WINDOW_MINUTES", 120),
+            smartshell_max_event_age_minutes=_int_env("SMARTSHELL_MAX_EVENT_AGE_MINUTES", 30),
+            smartshell_enable_warehouse_history=_bool_env("SMARTSHELL_ENABLE_WAREHOUSE_HISTORY", False),
             smartshell_warehouse_poll_interval_seconds=_float_env(
                 "SMARTSHELL_WAREHOUSE_POLL_INTERVAL_SECONDS",
                 300.0,

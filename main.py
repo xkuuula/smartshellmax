@@ -51,13 +51,7 @@ async def main_async() -> None:
     service_started_at = _club_now(config)
     first_run = await storage.initialize_cursor(service_started_at)
     warehouse_first_run = await storage.initialize_state_cursor("smartshell_warehouse_cursor", service_started_at)
-    discarded = await storage.discard_unsent_events_before(
-        "GOOD_HISTORY_",
-        service_started_at - timedelta(minutes=2),
-        "warehouse history older than service startup is not resent",
-    )
-    if discarded:
-        logger.warning("Discarded %s old unsent warehouse operation(s) on startup", discarded)
+    await discard_stale_unsent_events(config, storage, "startup")
 
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
@@ -69,26 +63,29 @@ async def main_async() -> None:
                 poll_smartshell(config, storage, smartshell, stop_event, first_run),
                 name="smartshell-poller",
             )
-            warehouse_poller = asyncio.create_task(
-                poll_smartshell_warehouse(
-                    config,
-                    storage,
-                    smartshell,
-                    stop_event,
-                    warehouse_first_run,
-                    service_started_at - timedelta(minutes=2),
-                ),
-                name="smartshell-warehouse-poller",
-            )
             cleanup = asyncio.create_task(cleanup_worker(config, storage, stop_event), name="cleanup-worker")
+            tasks = [poller, cleanup, sender]
+            if config.smartshell_enable_warehouse_history:
+                warehouse_poller = asyncio.create_task(
+                    poll_smartshell_warehouse(
+                        config,
+                        storage,
+                        smartshell,
+                        stop_event,
+                        warehouse_first_run,
+                        service_started_at - timedelta(minutes=2),
+                    ),
+                    name="smartshell-warehouse-poller",
+                )
+                tasks.append(warehouse_poller)
+            else:
+                logger.info("SmartShell warehouse history fallback is disabled; using regular SmartShell logs only")
             try:
                 await stop_event.wait()
             finally:
-                poller.cancel()
-                warehouse_poller.cancel()
-                cleanup.cancel()
-                sender.cancel()
-                await asyncio.gather(poller, warehouse_poller, cleanup, sender, return_exceptions=True)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         await storage.close()
         logger.info("Service stopped")
@@ -177,6 +174,7 @@ async def poll_smartshell_warehouse(
                 _format_log_dt(start),
                 _format_log_dt(finish),
             )
+            effective_min_created_at = max(min_created_at, stale_before(config))
             queued = await enqueue_good_history_operations(
                 config,
                 storage,
@@ -184,7 +182,7 @@ async def poll_smartshell_warehouse(
                 start,
                 finish,
                 stop_event,
-                min_created_at,
+                effective_min_created_at,
             )
             await storage.advance_state_cursor("smartshell_warehouse_cursor", finish)
             if queued:
@@ -203,19 +201,42 @@ async def poll_smartshell_warehouse(
 
 
 async def cleanup_worker(config: Config, storage: Storage, stop_event: asyncio.Event) -> None:
+    last_retention_cleanup = 0.0
     while not stop_event.is_set():
         try:
-            older_than = _club_now(config) - timedelta(days=config.retention_days)
-            removed = await storage.cleanup_old_records(older_than)
-            if removed:
-                logger.info(
-                    "Cleaned up %s old SmartShell record(s) older than %s",
-                    removed,
-                    _format_log_dt(older_than),
-                )
+            await discard_stale_unsent_events(config, storage, "cleanup")
+            now = time.time()
+            if now - last_retention_cleanup >= 6 * 60 * 60:
+                older_than = _club_now(config) - timedelta(days=config.retention_days)
+                removed = await storage.cleanup_old_records(older_than)
+                last_retention_cleanup = now
+                if removed:
+                    logger.info(
+                        "Cleaned up %s old SmartShell record(s) older than %s",
+                        removed,
+                        _format_log_dt(older_than),
+                    )
         except Exception:
             logger.exception("Storage cleanup failed")
-        await _sleep_or_stop(stop_event, 6 * 60 * 60)
+        await _sleep_or_stop(stop_event, 60)
+
+
+async def discard_stale_unsent_events(config: Config, storage: Storage, source: str) -> None:
+    before = stale_before(config)
+    if before == datetime.min:
+        return
+    removed = await storage.discard_unsent_events_before(
+        "",
+        before,
+        f"event older than SMARTSHELL_MAX_EVENT_AGE_MINUTES={config.smartshell_max_event_age_minutes}",
+    )
+    if removed:
+        logger.warning(
+            "Discarded %s stale unsent SmartShell event(s) during %s; older than %s",
+            removed,
+            source,
+            _format_log_dt(before),
+        )
 
 
 async def enqueue_new_events(
@@ -225,7 +246,19 @@ async def enqueue_new_events(
     events: list[SmartShellEvent],
 ) -> int:
     queued = 0
+    stale_cutoff = stale_before(config)
     for event in sorted(events, key=lambda item: (item.created_at, item.id)):
+        if event.created_at < stale_cutoff:
+            logger.debug(
+                "Skipped stale SmartShell event id=%s type=%s at=%s",
+                event.id,
+                event.type,
+                _format_log_dt(event.created_at),
+            )
+            await storage.mark_skipped(event.id, event.created_at, event.type, event.description)
+            await storage.advance_cursor(event.created_at)
+            continue
+
         if not _should_forward(config, event):
             logger.debug(
                 "Skipped SmartShell event id=%s type=%s at=%s by filter: %s",
@@ -328,12 +361,7 @@ async def outbox_worker(storage: Storage, max_client: MaxClient, stop_event: asy
         item = await storage.next_outbox_item()
         if item is None:
             failures = 0
-            await _sleep_or_stop(stop_event, 3)
-            continue
-
-        delay = item.next_attempt_at - time.time()
-        if delay > 0:
-            await _sleep_or_stop(stop_event, min(delay, 30))
+            await _sleep_or_stop(stop_event, 1)
             continue
 
         if item.status == "uncertain":
@@ -423,7 +451,7 @@ def _should_forward(config: Config, event: SmartShellEvent) -> bool:
     if config.smartshell_description_keywords:
         haystack = _plain_text(event.description).casefold()
         return any(keyword.casefold() in haystack for keyword in config.smartshell_description_keywords)
-    return True
+    return False
 
 
 async def _format_event_message(
@@ -576,6 +604,12 @@ def _club_now(config: Config) -> datetime:
     except ZoneInfoNotFoundError as error:
         raise RuntimeError(f"Unknown SMARTSHELL_TIMEZONE: {config.smartshell_timezone}") from error
     return datetime.now(timezone).replace(tzinfo=None)
+
+
+def stale_before(config: Config) -> datetime:
+    if config.smartshell_max_event_age_minutes <= 0:
+        return datetime.min
+    return _club_now(config) - timedelta(minutes=config.smartshell_max_event_age_minutes)
 
 
 def _event_type_summary(events: list[SmartShellEvent]) -> str:
